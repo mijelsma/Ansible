@@ -1,0 +1,7 @@
+- name: Install Docker using geerlingguy.docker role
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  roles:
+    - geerlingguy.docker
