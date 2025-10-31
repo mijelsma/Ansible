@@ -22,9 +22,9 @@
     
     # Required firewall ports to open
     firewall_allowed_ports:
-      - "{{ ssh_port }}/tcp"  # SSH
-      - "80/tcp"              # HTTP
-      - "443/tcp"             # HTTPS
+      - { port: "{{ ssh_port }}", proto: "tcp" }  # SSH
+      - { port: "80", proto: "tcp" }              # HTTP
+      - { port: "443", proto: "tcp" }             # HTTPS
     
     # Security packages to install
     security_packages:
@@ -182,7 +182,8 @@
     - name: Allow required ports through firewall
       ufw:
         rule: allow
-        port: "{{ item }}"
+        port: "{{ item.port }}"
+        proto: "{{ item.proto }}"
       with_items: "{{ firewall_allowed_ports }}"
 
     - name: Enable UFW
