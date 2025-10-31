@@ -1,0 +1,174 @@
+---
+- name: Install and configure Zabbix agent2 in active mode
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # Zabbix server configuration - Override these variables in your inventory or command line
+    # Example: ansible-playbook -e "zabbix_server_host=your-zabbix-server.com"
+    zabbix_server_host: "{{ zabbix_server_host | default('localhost') }}"
+    zabbix_server_port: "{{ zabbix_server_port | default(10051) }}"
+    
+    # Agent configuration
+    zabbix_agent2_version: "6.4"  # Adjust version as needed
+    zabbix_agent2_hostname: "{{ inventory_hostname }}"
+    zabbix_agent2_hostmetadata: "Linux"
+    zabbix_agent2_listen_port: 10050
+    zabbix_agent2_active_mode: true
+    zabbix_agent2_passive_mode: false
+    
+    # Active checks configuration
+    zabbix_agent2_server_active: "{{ zabbix_server_host }}:{{ zabbix_server_port }}"
+    zabbix_agent2_refresh_active_checks: 120
+    
+    # Security and logging
+    zabbix_agent2_timeout: 3
+    zabbix_agent2_log_level: 3  # 0=emerg, 1=alert, 2=crit, 3=err, 4=warning, 5=notice, 6=info, 7=debug
+    zabbix_agent2_log_file: "/var/log/zabbix/zabbix_agent2.log"
+    zabbix_agent2_log_file_size: 100
+    
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+      
+    - name: Install required packages
+      package:
+        name:
+          - wget
+          - gnupg2
+          - software-properties-common
+        state: present
+      when: ansible_os_family == "Debian"
+      
+    - name: Add Zabbix repository key
+      apt_key:
+        url: "https://repo.zabbix.com/zabbix-official-repo.key"
+        state: present
+      when: ansible_os_family == "Debian"
+      
+    - name: Add Zabbix repository
+      apt_repository:
+        repo: "deb https://repo.zabbix.com/zabbix/{{ zabbix_agent2_version }}/{{ ansible_distribution | lower }} {{ ansible_distribution_release }} main"
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+      
+    - name: Install Zabbix agent2
+      package:
+        name: zabbix-agent2
+        state: present
+        
+    - name: Create Zabbix log directory
+      file:
+        path: /var/log/zabbix
+        state: directory
+        owner: zabbix
+        group: zabbix
+        mode: '0755'
+        
+    - name: Configure Zabbix agent2
+      template:
+        src: zabbix_agent2.conf.j2
+        dest: /etc/zabbix/zabbix_agent2.conf
+        owner: root
+        group: zabbix
+        mode: '0640'
+        backup: yes
+      notify: restart zabbix-agent2
+      
+    - name: Create Zabbix agent2 configuration from template
+      copy:
+        content: |
+          # Zabbix agent2 configuration file
+          PidFile=/run/zabbix/zabbix_agent2.pid
+          LogFile={{ zabbix_agent2_log_file }}
+          LogFileSize={{ zabbix_agent2_log_file_size }}
+          DebugLevel={{ zabbix_agent2_log_level }}
+          
+          # Active mode configuration
+          {% if zabbix_agent2_active_mode %}
+          ServerActive={{ zabbix_agent2_server_active }}
+          Hostname={{ zabbix_agent2_hostname }}
+          HostMetadata={{ zabbix_agent2_hostmetadata }}
+          RefreshActiveChecks={{ zabbix_agent2_refresh_active_checks }}
+          {% endif %}
+          
+          # Passive mode configuration
+          {% if zabbix_agent2_passive_mode %}
+          Server={{ zabbix_server_host }}
+          ListenPort={{ zabbix_agent2_listen_port }}
+          {% else %}
+          Server=
+          ListenPort=0
+          {% endif %}
+          
+          # Performance and security
+          Timeout={{ zabbix_agent2_timeout }}
+          AllowRoot=0
+          
+          # Include additional configuration files
+          Include=/etc/zabbix/zabbix_agent2.d/*.conf
+          
+          # Control socket
+          ControlSocket=/tmp/agent.sock
+          
+          # Plugins configuration
+          Plugins.SystemRun.LogRemoteCommands=0
+        dest: /etc/zabbix/zabbix_agent2.conf
+        owner: root
+        group: zabbix
+        mode: '0640'
+        backup: yes
+      notify: restart zabbix-agent2
+      
+    - name: Create Zabbix agent2 additional config directory
+      file:
+        path: /etc/zabbix/zabbix_agent2.d
+        state: directory
+        owner: root
+        group: zabbix
+        mode: '0755'
+        
+    - name: Ensure Zabbix agent2 service is enabled and running
+      systemd:
+        name: zabbix-agent2
+        enabled: yes
+        state: started
+        daemon_reload: yes
+        
+    - name: Check Zabbix agent2 status
+      command: systemctl status zabbix-agent2
+      register: zabbix_status
+      changed_when: false
+      
+    - name: Display Zabbix agent2 status
+      debug:
+        var: zabbix_status.stdout_lines
+        
+    - name: Test connection to Zabbix server
+      wait_for:
+        host: "{{ zabbix_server_host }}"
+        port: "{{ zabbix_server_port }}"
+        timeout: 10
+      register: zabbix_connection
+      ignore_errors: yes
+      
+    - name: Display connection test results
+      debug:
+        msg: "Connection to Zabbix server {{ zabbix_server_host }}:{{ zabbix_server_port }} successful"
+      when: zabbix_connection is succeeded
+      
+    - name: Display connection failure
+      debug:
+        msg: "WARNING: Cannot connect to Zabbix server {{ zabbix_server_host }}:{{ zabbix_server_port }}"
+      when: zabbix_connection is failed
+      
+  handlers:
+    - name: restart zabbix-agent2
+      systemd:
+        name: zabbix-agent2
+        state: restarted
