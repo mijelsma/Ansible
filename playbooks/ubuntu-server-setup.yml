@@ -14,6 +14,9 @@
     ssh_max_auth_tries: 3
     ssh_client_alive_interval: 300
     ssh_client_alive_count_max: 2
+    ssh_allow_tcp_forwarding: "yes"
+    ssh_allow_agent_forwarding: "yes"
+    ssh_gateway_ports: "no"
     
     # Firewall Configuration
     ufw_default_incoming: "deny"
@@ -51,7 +54,7 @@
       - lsb-release
     
     # Timezone
-    server_timezone: "UTC"
+    server_timezone: "Europe/Amsterdam"
     
     # Automatic updates configuration
     auto_upgrades_enabled: true
@@ -144,6 +147,9 @@
         - { regexp: '^#?PubkeyAuthentication', line: 'PubkeyAuthentication yes' }
         - { regexp: '^#?ChallengeResponseAuthentication', line: 'ChallengeResponseAuthentication no' }
         - { regexp: '^#?UsePAM', line: 'UsePAM yes' }
+        - { regexp: '^#?AllowTcpForwarding', line: 'AllowTcpForwarding {{ ssh_allow_tcp_forwarding }}' }
+        - { regexp: '^#?AllowAgentForwarding', line: 'AllowAgentForwarding {{ ssh_allow_agent_forwarding }}' }
+        - { regexp: '^#?GatewayPorts', line: 'GatewayPorts {{ ssh_gateway_ports }}' }
       notify: restart ssh
 
     - name: Create SSH privilege separation directory
@@ -254,85 +260,6 @@
         dest: /etc/apt/apt.conf.d/20auto-upgrades
         backup: yes
       when: auto_upgrades_enabled
-
-    # ================================
-    # SYSTEM SECURITY HARDENING
-    # ================================
-    - name: Disable unused network protocols
-      lineinfile:
-        path: /etc/modprobe.d/blacklist-rare-protocols.conf
-        line: "{{ item }}"
-        create: yes
-      with_items:
-        - "install dccp /bin/true"
-        - "install sctp /bin/true"
-        - "install rds /bin/true"
-        - "install tipc /bin/true"
-
-    - name: Set kernel parameters for security
-      sysctl:
-        name: "{{ item.name }}"
-        value: "{{ item.value }}"
-        state: present
-        reload: yes
-        sysctl_file: /etc/sysctl.d/99-security.conf
-      with_items:
-        - { name: 'net.ipv4.ip_forward', value: '0' }
-        - { name: 'net.ipv4.conf.all.send_redirects', value: '0' }
-        - { name: 'net.ipv4.conf.default.send_redirects', value: '0' }
-        - { name: 'net.ipv4.conf.all.accept_redirects', value: '0' }
-        - { name: 'net.ipv4.conf.default.accept_redirects', value: '0' }
-        - { name: 'net.ipv4.conf.all.secure_redirects', value: '0' }
-        - { name: 'net.ipv4.conf.default.secure_redirects', value: '0' }
-        - { name: 'net.ipv4.icmp_echo_ignore_broadcasts', value: '1' }
-        - { name: 'net.ipv4.icmp_ignore_bogus_error_responses', value: '1' }
-        - { name: 'net.ipv4.conf.all.log_martians', value: '1' }
-        - { name: 'net.ipv4.conf.default.log_martians', value: '1' }
-        - { name: 'net.ipv4.tcp_syncookies', value: '1' }
-        - { name: 'kernel.dmesg_restrict', value: '1' }
-        - { name: 'kernel.kptr_restrict', value: '2' }
-        - { name: 'kernel.yama.ptrace_scope', value: '1' }
-
-    # ================================
-    # SECURITY TOOLS CONFIGURATION
-    # ================================
-    - name: Configure rkhunter
-      lineinfile:
-        path: /etc/rkhunter.conf
-        regexp: "{{ item.regexp }}"
-        line: "{{ item.line }}"
-        backup: yes
-      with_items:
-        - { regexp: '^#?UPDATE_MIRRORS', line: 'UPDATE_MIRRORS=1' }
-        - { regexp: '^#?MIRRORS_MODE', line: 'MIRRORS_MODE=0' }
-        - { regexp: '^#?WEB_CMD', line: 'WEB_CMD=""' }
-
-    - name: Update rkhunter database
-      command: rkhunter --update
-      register: rkhunter_update
-      changed_when: false
-
-    # ================================
-    # FINAL SYSTEM STATUS
-    # ================================
-    - name: Display setup completion summary
-      debug:
-        msg: |
-          Ubuntu Server Setup Complete!
-          
-          Security Features Enabled:
-          - SSH hardened (port {{ ssh_port }}, password auth disabled)
-          - UFW firewall configured and enabled
-          - Fail2ban protection active
-          - Automatic security updates {{ 'enabled' if auto_upgrades_enabled else 'disabled' }}
-          - System hardening applied
-          - Security monitoring tools installed
-          
-          Important Notes:
-          - Ensure you have SSH key access before disconnecting
-          - SSH is now on port {{ ssh_port }}
-          - Password authentication is disabled
-          - Root login is disabled
 
   handlers:
     - name: restart ssh
