@@ -1,0 +1,324 @@
+---
+- name: Ubuntu Server Initial Setup and Security Hardening
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # SSH Configuration
+    ssh_port: 22
+    ssh_permit_root_login: "prohibit-password"
+    ssh_password_authentication: "no"
+    ssh_permit_empty_passwords: "no"
+    ssh_x11_forwarding: "no"
+    ssh_max_auth_tries: 3
+    ssh_client_alive_interval: 300
+    ssh_client_alive_count_max: 2
+    
+    # Firewall Configuration
+    ufw_default_incoming: "deny"
+    ufw_default_outgoing: "allow"
+    ufw_default_forward: "deny"
+    
+    # Required firewall ports to open
+    firewall_allowed_ports:
+      - "{{ ssh_port }}/tcp"  # SSH
+      - "80/tcp"              # HTTP
+      - "443/tcp"             # HTTPS
+    
+    # Security packages to install
+    security_packages:
+      - fail2ban
+      - ufw
+      - unattended-upgrades
+      - apt-listchanges
+      - needrestart
+      - logwatch
+      - rkhunter
+      - chkrootkit
+    
+    # Essential packages
+    essential_packages:
+      - curl
+      - wget
+      - vim
+      - htop
+      - tree
+      - unzip
+      - software-properties-common
+      - ca-certificates
+      - gnupg
+      - lsb-release
+    
+    # Timezone
+    server_timezone: "UTC"
+    
+    # Automatic updates configuration
+    auto_upgrades_enabled: true
+    auto_reboot_enabled: false
+    auto_reboot_time: "06:00"
+
+  tasks:
+    # ================================
+    # SYSTEM UPDATES
+    # ================================
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Perform full package upgrade
+      apt:
+        upgrade: dist
+      register: full_upgrade_result
+
+    - name: Remove unused packages (autoremove)
+      apt:
+        autoremove: yes
+      register: autoremove_result
+
+    - name: Check if reboot is required
+      stat:
+        path: /var/run/reboot-required
+      register: reboot_required_file
+
+    - name: Display reboot requirement status
+      debug:
+        msg: "Reboot is required for this host after setup completion"
+      when: reboot_required_file.stat.exists
+
+    # ================================
+    # ESSENTIAL PACKAGES
+    # ================================
+    - name: Install essential packages
+      apt:
+        name: "{{ essential_packages }}"
+        state: present
+        update_cache: yes
+      register: essential_packages_result
+
+    - name: Install security packages
+      apt:
+        name: "{{ security_packages }}"
+        state: present
+      register: security_packages_result
+
+    # ================================
+    # TIMEZONE CONFIGURATION
+    # ================================
+    - name: Set timezone
+      timezone:
+        name: "{{ server_timezone }}"
+      notify: restart rsyslog
+
+    # ================================
+    # SSH HARDENING
+    # ================================
+    - name: Backup original SSH config
+      copy:
+        src: /etc/ssh/sshd_config
+        dest: /etc/ssh/sshd_config.backup
+        remote_src: yes
+        backup: yes
+      run_once: true
+
+    - name: Configure SSH daemon
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        state: present
+        backup: yes
+      with_items:
+        - { regexp: '^#?Port', line: 'Port {{ ssh_port }}' }
+        - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin {{ ssh_permit_root_login }}' }
+        - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication {{ ssh_password_authentication }}' }
+        - { regexp: '^#?PermitEmptyPasswords', line: 'PermitEmptyPasswords {{ ssh_permit_empty_passwords }}' }
+        - { regexp: '^#?X11Forwarding', line: 'X11Forwarding {{ ssh_x11_forwarding }}' }
+        - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries {{ ssh_max_auth_tries }}' }
+        - { regexp: '^#?ClientAliveInterval', line: 'ClientAliveInterval {{ ssh_client_alive_interval }}' }
+        - { regexp: '^#?ClientAliveCountMax', line: 'ClientAliveCountMax {{ ssh_client_alive_count_max }}' }
+        - { regexp: '^#?Protocol', line: 'Protocol 2' }
+        - { regexp: '^#?IgnoreRhosts', line: 'IgnoreRhosts yes' }
+        - { regexp: '^#?HostbasedAuthentication', line: 'HostbasedAuthentication no' }
+        - { regexp: '^#?PubkeyAuthentication', line: 'PubkeyAuthentication yes' }
+        - { regexp: '^#?ChallengeResponseAuthentication', line: 'ChallengeResponseAuthentication no' }
+        - { regexp: '^#?UsePAM', line: 'UsePAM yes' }
+      notify: restart ssh
+
+    - name: Validate SSH configuration
+      command: sshd -t
+      register: sshd_config_test
+      failed_when: sshd_config_test.rc != 0
+
+    # ================================
+    # FIREWALL CONFIGURATION
+    # ================================
+    - name: Ensure UFW is installed
+      apt:
+        name: ufw
+        state: present
+
+    - name: Reset UFW to defaults
+      command: ufw --force reset
+
+    - name: Configure UFW defaults
+      ufw:
+        direction: "{{ item.direction }}"
+        policy: "{{ item.policy }}"
+      with_items:
+        - { direction: 'incoming', policy: '{{ ufw_default_incoming }}' }
+        - { direction: 'outgoing', policy: '{{ ufw_default_outgoing }}' }
+        - { direction: 'routed', policy: '{{ ufw_default_forward }}' }
+
+    - name: Allow required ports through firewall
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+      with_items: "{{ firewall_allowed_ports }}"
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+        enabled: yes
+
+    # ================================
+    # FAIL2BAN CONFIGURATION
+    # ================================
+    - name: Create fail2ban local configuration
+      copy:
+        content: |
+          [DEFAULT]
+          bantime = 3600
+          findtime = 600
+          maxretry = 3
+          backend = systemd
+          
+          [sshd]
+          enabled = true
+          port = {{ ssh_port }}
+          filter = sshd
+          logpath = /var/log/auth.log
+          maxretry = 3
+          bantime = 3600
+        dest: /etc/fail2ban/jail.local
+        backup: yes
+      notify: restart fail2ban
+
+    # ================================
+    # AUTOMATIC UPDATES
+    # ================================
+    - name: Configure unattended-upgrades
+      template:
+        src: 50unattended-upgrades.j2
+        dest: /etc/apt/apt.conf.d/50unattended-upgrades
+        backup: yes
+      when: auto_upgrades_enabled
+      notify: restart unattended-upgrades
+
+    - name: Enable automatic updates
+      template:
+        src: 20auto-upgrades.j2
+        dest: /etc/apt/apt.conf.d/20auto-upgrades
+        backup: yes
+      when: auto_upgrades_enabled
+
+    # ================================
+    # SYSTEM SECURITY HARDENING
+    # ================================
+    - name: Disable unused network protocols
+      lineinfile:
+        path: /etc/modprobe.d/blacklist-rare-protocols.conf
+        line: "{{ item }}"
+        create: yes
+      with_items:
+        - "install dccp /bin/true"
+        - "install sctp /bin/true"
+        - "install rds /bin/true"
+        - "install tipc /bin/true"
+
+    - name: Set kernel parameters for security
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: yes
+        sysctl_file: /etc/sysctl.d/99-security.conf
+      with_items:
+        - { name: 'net.ipv4.ip_forward', value: '0' }
+        - { name: 'net.ipv4.conf.all.send_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.default.send_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.all.accept_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.default.accept_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.all.secure_redirects', value: '0' }
+        - { name: 'net.ipv4.conf.default.secure_redirects', value: '0' }
+        - { name: 'net.ipv4.icmp_echo_ignore_broadcasts', value: '1' }
+        - { name: 'net.ipv4.icmp_ignore_bogus_error_responses', value: '1' }
+        - { name: 'net.ipv4.conf.all.log_martians', value: '1' }
+        - { name: 'net.ipv4.conf.default.log_martians', value: '1' }
+        - { name: 'net.ipv4.tcp_syncookies', value: '1' }
+        - { name: 'kernel.dmesg_restrict', value: '1' }
+        - { name: 'kernel.kptr_restrict', value: '2' }
+        - { name: 'kernel.yama.ptrace_scope', value: '1' }
+
+    # ================================
+    # SECURITY TOOLS CONFIGURATION
+    # ================================
+    - name: Configure rkhunter
+      lineinfile:
+        path: /etc/rkhunter.conf
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        backup: yes
+      with_items:
+        - { regexp: '^#?UPDATE_MIRRORS', line: 'UPDATE_MIRRORS=1' }
+        - { regexp: '^#?MIRRORS_MODE', line: 'MIRRORS_MODE=0' }
+        - { regexp: '^#?WEB_CMD', line: 'WEB_CMD=""' }
+
+    - name: Update rkhunter database
+      command: rkhunter --update
+      register: rkhunter_update
+      changed_when: false
+
+    # ================================
+    # FINAL SYSTEM STATUS
+    # ================================
+    - name: Display setup completion summary
+      debug:
+        msg: |
+          Ubuntu Server Setup Complete!
+          
+          Security Features Enabled:
+          - SSH hardened (port {{ ssh_port }}, password auth disabled)
+          - UFW firewall configured and enabled
+          - Fail2ban protection active
+          - Automatic security updates {{ 'enabled' if auto_upgrades_enabled else 'disabled' }}
+          - System hardening applied
+          - Security monitoring tools installed
+          
+          Important Notes:
+          - Ensure you have SSH key access before disconnecting
+          - SSH is now on port {{ ssh_port }}
+          - Password authentication is disabled
+          - Root login is disabled
+
+  handlers:
+    - name: restart ssh
+      service:
+        name: ssh
+        state: restarted
+
+    - name: restart fail2ban
+      service:
+        name: fail2ban
+        state: restarted
+
+    - name: restart unattended-upgrades
+      service:
+        name: unattended-upgrades
+        state: restarted
+
+    - name: restart rsyslog
+      service:
+        name: rsyslog
+        state: restarted
