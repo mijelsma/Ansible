@@ -1,7 +1,13 @@
 roles:
   - name: geerlingguy.docker
     version: 7.8.0
+  - name: geerlingguy.certbot
+    version: 5.4.1
+  - name: geerlingguy.git
+    version: 3.0.0
 
 collections:
   - name: community.docker
     version: ">=3.0.0"
+  - name: community.zabbix
+    version: ">=2.0.0"
