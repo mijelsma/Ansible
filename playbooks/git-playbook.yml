@@ -1,0 +1,8 @@
+---
+- name: Install and configure Git using geerlingguy.git role
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  roles:
+    - geerlingguy.git
