@@ -1,0 +1,11 @@
+---
+- name: Install btop system monitor
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Install btop (modern system monitor)
+      package:
+        name: btop
+        state: present
